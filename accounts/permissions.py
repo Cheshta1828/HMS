@@ -31,6 +31,12 @@ class IsRelevantPatientOrDoctor(BasePermission):
             return request.user.department == patient_record.department.name
 
         return False
+class IsDoctorInDepartment(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        # Check if the user is a doctor and belongs to the same department as the patient's record
+        if request.user.role == customuser.DOCTOR and request.user.department == obj.patient_id.department:
+            return True
+        return False
     
 class IsPatientOrRelevantDoctor(BasePermission):
     def has_permission(self, request, view):

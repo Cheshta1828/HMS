@@ -4,7 +4,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import generics
 from .serializers import UserSerializer, PatientRecordSerializer,DepartmentSerializer
 from rest_framework.exceptions import PermissionDenied,NotFound
-# Create your views here.
 from django.shortcuts import render
 from rest_framework.generics import CreateAPIView
 from rest_framework.decorators import api_view, permission_classes
@@ -22,8 +21,10 @@ from .models import customuser, PatientRecord, Department
 from rest_framework.authentication import TokenAuthentication
 from django.db import transaction
 from django.contrib.auth.mixins import PermissionRequiredMixin
+from rest_framework.generics import get_object_or_404
 from django.views.generic import ListView
 from rest_framework.generics import ListCreateAPIView
+from .permissions import IsDoctor
 from .permissions import IsPatientOrRelevantDoctor,IsRelevantPatientOrDoctor
 
 
@@ -32,15 +33,14 @@ specialCharacters = "!@#$%^&*_-+=~`|\/:;,.?"
 
 
 
-class RegisterAPI(generics.GenericAPIView):  # class based view to register a user
+class RegisterAPI(generics.GenericAPIView): 
     serializer_class = RegisterSerializer
 
-    def post(self, request, *args, **kwargs):  # POST request handling
-        serializer = self.get_serializer(data=request.data)  # getting data
-        # Checking if passed data is valid
+    def post(self, request, *args, **kwargs):  
+        serializer = self.get_serializer(data=request.data)  
         serializer.is_valid(raise_exception=True)
 
-        # Get the validated data from the serializer
+        
         validated_data = serializer.validated_data
         password = validated_data['password']
         role = validated_data['role']
@@ -86,7 +86,7 @@ class RegisterAPI(generics.GenericAPIView):  # class based view to register a us
          
 
         elif role == 2:
-            print("checking for patient")  # If role is "patient"
+            print("checking for patient")  
             required_fields = ["diagnostics","observations", "treatments", "misc"]
             
             if not set(required_fields).issubset(set(list(validated_data.keys()))):
@@ -110,14 +110,14 @@ class RegisterAPI(generics.GenericAPIView):  # class based view to register a us
                                         role=validated_data['role'],
                                         department=validated_data['department']
 
-                                    )  # Get the first matching department's ID
+                                    )  
                         ins = PatientRecord.objects.create(
                                         patient_id=user,
                                         diagnostics=validated_data['diagnostics'],
                                         observations=validated_data['observations'],
                                         treatments=validated_data['treatments'],
                                         misc=validated_data['misc'],
-                                        department=deptins.first()  # Use the Department instance directly
+                                        department=deptins.first()  
                                     )
                         group = Group.objects.get(name='Patients')
                         user.groups.add(group)
@@ -137,7 +137,7 @@ class RegisterAPI(generics.GenericAPIView):  # class based view to register a us
                             
                                     
                     else:
-                                # Handle the case when the department with the provided name does not exist
+                                
                         return Response({"error":"invalid department name"})
 
 
@@ -148,13 +148,13 @@ class RegisterAPI(generics.GenericAPIView):  # class based view to register a us
        
 
 
-class LoginAPI(KnoxLoginView):  # Class based login view
+class LoginAPI(KnoxLoginView):  
 
     permission_classes = (permissions.AllowAny,)
 
     def post(self, request, format=None):
         print(request.data)
-        # getting username in lowercase
+        
         request.data['username'] = request.data['username'].lower()
         serializer = AuthTokenSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -163,9 +163,11 @@ class LoginAPI(KnoxLoginView):  # Class based login view
         return super(LoginAPI, self).post(request, format=None)
 
 
-from .permissions import IsDoctor
 
-# Your existing imports
+
+
+
+
 
 class DoctorsList(generics.ListCreateAPIView):
     permission_classes = [IsDoctor]
@@ -175,15 +177,35 @@ class DoctorsList(generics.ListCreateAPIView):
     def post(self, request, *args, **kwargs):
         role = request.data.get('role')
         if role != 1:
-            return Response({"error": "role not to be passed as string and only role 1 (Doctor) is allowed to be created."}, status=status.HTTP_400_BAD_REQUEST)
-        return self.create(request, *args, **kwargs)
+            return Response({"error": "Role should be 1 (Doctor) for creating a doctor."}, status=status.HTTP_400_BAD_REQUEST)
 
+        
+        request_data = {
+            'username': request.data.get('username'),
+            'email': request.data.get('email'),
+            'password': request.data.get('password'),
+            'role': role,
+            'department': request.data.get('department')
+        }
+
+        
+        register_serializer = RegisterSerializer(data=request_data)
+        if register_serializer.is_valid():
+            user = register_serializer.save()
+            group = Group.objects.get(name='Doctors')
+            user.groups.add(group)
+
+            return Response({
+                "user": UserSerializer(user, context=self.get_serializer_context()).data,
+                "token": AuthToken.objects.create(user)[1]
+            }, status=status.HTTP_201_CREATED)
+        else:
+            return Response(register_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 @api_view(['GET', 'PUT', 'DELETE'])
-
-@permission_classes([permissions.IsAuthenticated,IsDoctor])
-
+@permission_classes([permissions.IsAuthenticated, IsDoctor])
 def DoctorDetail(request, pk):
     try:
+       
         if not request.user.groups.filter(name='Doctors').exists() or request.user.role != customuser.DOCTOR:
             return Response({"error": "Access forbidden. Only doctors are allowed to access this endpoint."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -194,38 +216,31 @@ def DoctorDetail(request, pk):
         if not doctor.groups.filter(name='Doctors').exists() or doctor.role != customuser.DOCTOR:
             return Response({"error": "The requested user is not a doctor."}, status=status.HTTP_400_BAD_REQUEST)
 
+        
+        if request.user.id != doctor.id:
+            return Response({"error": "You can only access your own profile."}, status=status.HTTP_403_FORBIDDEN)
+
+        
         if request.method == 'GET':
             serializer = UserSerializer(doctor)
-            if doctor.first_name!="":
-                return Response(
-                {"id":doctor.id,
-                    "username":doctor.username,
-                 "email":doctor.email,
-                 "first_name":doctor.first_name
+            return Response(serializer.data)
 
-                 
-                 })
-            else:
-                return Response(
-                {"id":doctor.id,
-                    "username":doctor.username,
-                 "email":doctor.email
-
-                 
-                 }
-            )
-
+        
         elif request.method == 'PUT':
+           
+            if request.user.id != doctor.id:
+                return Response({"error": "You can only update your own profile."}, status=status.HTTP_403_FORBIDDEN)
+
             
             if set(request.data.keys()) - {'username', 'email'}:
                 return Response({"error": "Only 'username' and 'email' fields can be updated."}, status=status.HTTP_400_BAD_REQUEST)
 
-           
+            
             new_username = request.data.get('username')
             if new_username and customuser.objects.exclude(pk=pk).filter(username=new_username.lower()).exists():
                 return Response({"error": "Username already taken."}, status=status.HTTP_400_BAD_REQUEST)
 
-            
+           
             request.data.pop('password', None)
 
             serializer = UserSerializer(doctor, data=request.data, partial=True)
@@ -234,25 +249,31 @@ def DoctorDetail(request, pk):
                 return Response(serializer.data)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
+        
         elif request.method == 'DELETE':
+            
+            if request.user.id != doctor.id:
+                return Response({"error": "You can only delete your own profile."}, status=status.HTTP_403_FORBIDDEN)
+
             doctor.delete()
             return Response({"message": "Doctor deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
 
     except customuser.DoesNotExist:
         return Response({"error": "Doctor not found."}, status=status.HTTP_404_NOT_FOUND)
-class PatientList(generics.ListCreateAPIView):
+class PatientList(ListCreateAPIView):
     permission_classes = [IsDoctor]
+    serializer_class = UserSerializer
 
     def get_queryset(self):
-        # Only doctors should see the list of patients
+        
         if self.request.user.role == customuser.DOCTOR:
-            return PatientRecord.objects.all()
+            
+            return customuser.objects.filter(role=customuser.PATIENT, is_superuser=False)
         else:
-            return PatientRecord.objects.none()
+            return customuser.objects.none()
 
     def list(self, request, *args, **kwargs):
-        # Check if the user is a doctor and has the "Doctors" group
+        
         if not request.user.groups.filter(name='Doctors').exists() or request.user.role != customuser.DOCTOR:
             return Response({"error": "Access forbidden. Only doctors are allowed to view the list of patients."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -260,119 +281,131 @@ class PatientList(generics.ListCreateAPIView):
         data = []
         for patient in queryset:
             data.append({
-
-                "patient_id": patient.patient_id.id,
-                "username":patient.patient_id.username,
-                "department":patient.patient_id.department,
-                "diagnostics": patient.diagnostics,
-                "observations": patient.observations,
-                "treatments": patient.treatments,
-                "misc": patient.misc
+                "id": patient.id,
+                "username": patient.username,
+                "email": patient.email,
+                "department": patient.department if patient.department else None,
             })
 
         return Response(data)
 
     def create(self, request, *args, **kwargs):
-        # Check if the user is a doctor and has the "Doctors" group
+        
         if not request.user.groups.filter(name='Doctors').exists() or request.user.role != customuser.DOCTOR:
             return Response({"error": "Access forbidden. Only doctors are allowed to create patients."}, status=status.HTTP_403_FORBIDDEN)
 
-        diagnostics = request.data.get('diagnostics')
-        observations = request.data.get('observations')
-        treatments = request.data.get('treatments')
-        misc = request.data.get('misc')
+        
+        username = request.data.get('username')
+        email = request.data.get('email')
+        department_name = request.data.get('department')
+        deptins = Department.objects.filter(name__iexact=department_name)
+        print(deptins)
+        if deptins.exists():
+                    idofdept = deptins.first().id
+                    print(idofdept)
 
-        if not (diagnostics and observations and treatments and misc):
-            return Response({"error": "All fields (diagnostics, observations, treatments, misc) are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        patient = PatientRecord.objects.create(
-            patient_id=request.user,
-            diagnostics=diagnostics,
-            observations=observations,
-            treatments=treatments,
-            misc=misc
-        )
+        if not (username and email):
+            return Response({"error": "Username and email are required fields."}, status=status.HTTP_400_BAD_REQUEST)
 
-        data = {
+        
+        if customuser.objects.filter(username=username.lower()).exists():
+            return Response({"error": "Username already taken."}, status=status.HTTP_400_BAD_REQUEST)
+
+        
+        request.data['role'] = customuser.PATIENT
+
+       
+        register_serializer = RegisterSerializer(data=request.data)
+        if register_serializer.is_valid():
+            user = register_serializer.save()
+            group = Group.objects.get(name='Patients')
+            user.groups.add(group)
+
             
-            "patient_id": patient.patient_id.id,
-            
-            "diagnostics": patient.diagnostics,
-            "observations": patient.observations,
-            "treatments": patient.treatments,
-            "misc": patient.misc
-        }
+            patient_record = PatientRecord.objects.create(
+                patient_id=user,
+                diagnostics=request.data.get('diagnostics'),
+                observations=request.data.get('observations'),
+                treatments=request.data.get('treatments'),
+                department=deptins.first(),
+                misc=request.data.get('misc')
+            )
 
-        return Response(data, status=status.HTTP_201_CREATED)
+            data = {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "department": department_name,
+            }
+            return Response(data, status=status.HTTP_201_CREATED)
+        else:
+            return Response(register_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['GET', 'PUT', 'DELETE'])
-@permission_classes([permissions.IsAuthenticated, IsPatientOrRelevantDoctor])
+@permission_classes([permissions.IsAuthenticated])
 def PatientDetail(request, pk):
-    patid=customuser.objects.get(pk=pk)
-    print(patid)
-    
     try:
         
-        
-        patient_record = PatientRecord.objects.get(patient_id=patid)
-        print(patient_record)
+        patient = customuser.objects.get(pk=pk)
 
-        # Check if the user has permission to access this patient record
+        
         if request.user.role == customuser.PATIENT:
-            # If the user is a patient, they can only access their own patient record
-            if request.user.id != patient_record.patient_id.id:
-                return Response({"error": "Access forbidden. You are not allowed to access this patient record."},
+            
+            if request.user.id != patient.id:
+                return Response({"error": "Access forbidden. You are not allowed to access this patient's details."},
                                 status=status.HTTP_403_FORBIDDEN)
         else:
-            # If the user is a doctor, they can only access patient records from their department
-            if request.user.department != patient_record.department.name:
-                return Response({"error": "Access forbidden. You are not allowed to access this patient record."},
+            
+            if request.user.department != patient.department:
+                return Response({"error": "Access forbidden. You are not allowed to access this patient's details."},
                                 status=status.HTTP_403_FORBIDDEN)
 
         if request.method == 'GET':
-            patient_data = {
-
-                "username": patient_record.patient_id.username,
-                "email": patient_record.patient_id.email,
-                "first_name": patient_record.patient_id.first_name,
-                "last_name": patient_record.patient_id.last_name,
-                "department":patient_record.patient_id.department,
-                "diagnostics": patient_record.diagnostics,
-                "observations": patient_record.observations,
-                "treatments": patient_record.treatments,
-                "misc": patient_record.misc
-            }
+            
+            patient_data = UserSerializer(patient).data
             return Response(patient_data)
 
         elif request.method == 'PUT':
-            # Only 'diagnostics', 'observations', 'treatments', 'misc' fields can be updated
-            serializer = PatientRecordSerializer(patient_record, data=request.data, partial=True)
+            
+            if set(request.data.keys()) - {'username', 'email'}:
+                return Response({"error": "Only 'username' and 'email' fields can be updated."},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+           
+            new_username = request.data.get('username')
+            if new_username and customuser.objects.exclude(pk=pk).filter(username=new_username.lower()).exists():
+                return Response({"error": "Username already taken."}, status=status.HTTP_400_BAD_REQUEST)
+
+            
+            serializer = UserSerializer(patient, data=request.data, partial=True)
             if serializer.is_valid():
                 serializer.save()
-                return Response(serializer.data)
+                return Response({"message": "Patient updated successfully.",
+                                                 "updated data":serializer.data})
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         elif request.method == 'DELETE':
-            patient_record.delete()
-            return Response({"message": "Patient record deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
+            
+            patient.delete()
+            return Response({"message": "Patient deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
 
-    except PatientRecord.DoesNotExist:
-        return Response({"error": "Patient record not found."}, status=status.HTTP_404_NOT_FOUND)
+    except customuser.DoesNotExist:
+        return Response({"error": "Patient not found."}, status=status.HTTP_404_NOT_FOUND)
 class PatientRecordsList(ListCreateAPIView):
     permission_classes = [IsDoctor]
-
-    queryset = PatientRecord.objects.all()
     serializer_class = PatientRecordSerializer
 
     def get_queryset(self):
-        # If the user is a doctor, return patient records from their department only
+        
         if self.request.user.role == customuser.DOCTOR:
             return PatientRecord.objects.filter(department__name=self.request.user.department)
         else:
             return PatientRecord.objects.none()
 
     def post(self, request, *args, **kwargs):
-        # Check if the user is a doctor and has the "Doctors" group
+        
         if not request.user.groups.filter(name='Doctors').exists() or request.user.role != customuser.DOCTOR:
             return Response({"error": "Access forbidden. Only doctors are allowed to create patients."},
                             status=status.HTTP_403_FORBIDDEN)
@@ -382,38 +415,53 @@ class PatientRecordsList(ListCreateAPIView):
         treatments = request.data.get('treatments')
         misc = request.data.get('misc')
         department_name = request.data.get('department')
+        patient_username = request.data.get('username')
 
-        if not (diagnostics and observations and treatments and misc and department_name):
-            return Response({"error": "All fields (diagnostics, observations, treatments, misc, department) are required."},
+        if not (diagnostics and observations and treatments and misc and department_name and patient_username):
+            return Response({"error": "All fields (diagnostics, observations, treatments, misc, department, username) are required."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # Get the department instance based on the provided department name
+        
         try:
             department = Department.objects.get(name=department_name)
         except Department.DoesNotExist:
             return Response({"error": "Invalid department name."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        patient = PatientRecord.objects.create(
-            patient_id=request.user,
+        
+        try:
+            patient = customuser.objects.get(username=patient_username)
+            if patient.role != customuser.PATIENT:
+                raise NotFound("No such patient exists.")
+        except customuser.DoesNotExist:
+            raise NotFound("No such patient exists.")
+
+        
+        if department_name != request.user.department:
+            return Response({"error": "You can only create patient records for patients in your department."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        
+        patient_record = PatientRecord.objects.create(
+            patient_id=patient,
             diagnostics=diagnostics,
             observations=observations,
             treatments=treatments,
             misc=misc,
-            department=department  # Set the department to the retrieved Department instance
+            department=department
         )
 
         data = {
-            "record_id": patient.record_id,
-            "patient_id": patient.patient_id.id,
-            "diagnostics": patient.diagnostics,
-            "observations": patient.observations,
-            "treatments": patient.treatments,
-            "misc": patient.misc,
-            "department": department_name,  # Return the department name in the response
+            "record_id": patient_record.record_id,
+            "patient_id": patient.id,
+            "diagnostics": patient_record.diagnostics,
+            "observations": patient_record.observations,
+            "treatments": patient_record.treatments,
+            "misc": patient_record.misc,
+            "department": department_name,
         }
 
-        return Response(data, status=status.HTTP_201_CREATED)
+        return Response({"message ":"created successfully ","record  is ":data,"status":status.HTTP_201_CREATED})
     
 
 
@@ -424,9 +472,9 @@ def patient_record_detail(request, pk):
     try:
         patient_record = PatientRecord.objects.get(pk=pk)
 
-        # Check if the user has permission to access this patient record
+        
         if request.user.role == customuser.PATIENT:
-            # Only the relevant patient can access their own record
+            
             if request.user != patient_record.patient_id:
                 return Response({"error": "Access forbidden. You are not allowed to access this patient record."},
                                 status=status.HTTP_403_FORBIDDEN)
@@ -457,7 +505,7 @@ class DepartmentsListCreateView(generics.ListCreateAPIView):
         department_name = request.data.get('name')
 
         if department_name:
-            # Check if a department with the same name (case-insensitive) already exists
+            
             existing_department = Department.objects.filter(name__iexact=department_name).first()
 
             if existing_department:
@@ -481,57 +529,57 @@ class DepartmentDoctorsView(generics.ListAPIView):
         try:
             department = Department.objects.get(pk=department_id)
         except Department.DoesNotExist:
-            raise NotFound("No such department exists.")  # Raise a NotFound exception if department does not exist
+            raise NotFound("No such department exists.")  
 
-        # Only doctors in the requested department can access the list of doctors in that department
+        
         if self.request.user.department != department.name:
             raise PermissionDenied("You are only allowed to access your department's records.")
 
-        # Get all doctors in the requested department
+        
         return customuser.objects.filter(role=customuser.DOCTOR, department=department.name)
 class DepartmentPatientsView(generics.ListAPIView, generics.UpdateAPIView):
     serializer_class = PatientRecordSerializer
     permission_classes = [permissions.IsAuthenticated,IsDoctor]
 
     def get_queryset(self):
-        # Check if the user is a doctor and has the "Doctors" group
+        
         if not self.request.user.groups.filter(name='Doctors').exists() or self.request.user.role != customuser.DOCTOR:
             return PatientRecord.objects.none()
 
-        # Get the department ID from the URL parameter
+        
         department_id = self.kwargs.get('pk')
 
         try:
             department = Department.objects.get(pk=department_id)
         except Department.DoesNotExist:
-            raise NotFound("No such department exists.")  # Raise a NotFound exception if department does not exist
+            raise NotFound("No such department exists.") 
 
-        # Only doctors in the requested department can access the list of patients in that department
+        
         if self.request.user.department != department.name:
             raise PermissionDenied("You are only allowed to access your department's records.")
 
-        # Get all patients in the requested department
+        
         return PatientRecord.objects.filter(department=department)
 
     def get_object(self):
-        # Get the department ID from the URL parameter
+        
         department_id = self.kwargs.get('pk')
 
         try:
             department = Department.objects.get(pk=department_id)
         except Department.DoesNotExist:
-            raise NotFound("No such department exists.")  # Raise a NotFound exception if department does not exist
+            raise NotFound("No such department exists.")  
 
-        # Only doctors in the requested department can update patient records in that department
+        
         if not self.request.user.groups.filter(name='Doctors').exists() or self.request.user.role != customuser.DOCTOR or self.request.user.department != department.name:
             raise PermissionDenied("You are only allowed to update patient records in your department.")
 
-        # Get the patient record ID from the URL parameter
+        
         record_id = self.kwargs.get('record_id')
 
         try:
             patient_record = PatientRecord.objects.get(pk=record_id)
         except PatientRecord.DoesNotExist:
-            raise NotFound("No such patient record exists.")  # Raise a NotFound exception if patient record does not exist
+            raise NotFound("No such patient record exists.")   
 
         return patient_record
