@@ -19,7 +19,7 @@ from knox.views import LoginView as KnoxLoginView
 from django.contrib.auth.models import Group
 from .models import customuser, PatientRecord, Department
 from rest_framework.authentication import TokenAuthentication
-from django.db import transaction
+
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from rest_framework.generics import get_object_or_404
 from django.views.generic import ListView
